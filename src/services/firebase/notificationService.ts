@@ -40,8 +40,18 @@ export const registerForPushNotifications = async (uid: string): Promise<string 
     });
   }
 
-  const tokenData = await Notifications.getExpoPushTokenAsync();
-  const token = tokenData.data;
+  // For Cloud Functions using Firebase Admin FCM, we need the native device push token (FCM/APNs token).
+  // `getExpoPushTokenAsync` is for Expo's push service and is not usable with `admin.messaging().send()`.
+  const devicePushToken = await Notifications.getDevicePushTokenAsync();
+  const token =
+    typeof devicePushToken === 'string'
+      ? devicePushToken
+      : (devicePushToken as { data?: unknown }).data;
+
+  if (!token || typeof token !== 'string') {
+    console.warn('Failed to get native device push token.');
+    return null;
+  }
 
   await updateFcmToken(uid, token);
   return token;

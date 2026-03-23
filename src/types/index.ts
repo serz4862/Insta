@@ -36,5 +36,5 @@ export type MainStackParamList = {
 
 export type RootStackParamList = {
   Auth: undefined;
-  Main: undefined;
+  Main: { screen?: keyof MainStackParamList } | undefined;
 };
