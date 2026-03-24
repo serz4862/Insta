@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useEffect, useMemo, useCallback, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,13 +8,14 @@ import {
   Alert,
   TouchableOpacity,
   Platform,
+  Animated,
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { MainStackParamList, Delivery } from '../../types';
 import { useDeliveryStore } from '../../store/deliveryStore';
 import { useLocation } from '../../hooks/useLocation';
-import { optimizeRoute } from '../../utils/routeOptimizer';
+import { optimizeRoute, totalRouteTravelTime } from '../../utils/routeOptimizer';
 import { updateDeliveryStatus } from '../../services/firebase/deliveryService';
 import { DeliveryCard } from '../../components/DeliveryCard';
 import { COLORS, SPACING, BORDER_RADIUS } from '../../constants';
@@ -27,28 +28,57 @@ export const RouteScreen: React.FC<Props> = ({ navigation }) => {
   const { deliveries, setOptimizedRoute, optimizedRoute } = useDeliveryStore();
   const { location, isLoading: locationLoading, error: locationError } = useLocation();
   const mapRef = useRef<MapView>(null);
+  const [reoptimizing, setReoptimizing] = useState(false);
+  const bannerOpacity = useRef(new Animated.Value(0)).current;
+  const prevPendingCount = useRef<number>(0);
 
   const pendingDeliveries = useMemo(
     () => deliveries.filter((d) => d.status === 'pending'),
     [deliveries]
   );
 
+  // Re-optimize whenever pending deliveries or location changes
   useEffect(() => {
-    if (!location || pendingDeliveries.length === 0) return;
+    if (!location) return;
+
+    if (pendingDeliveries.length === 0) {
+      setOptimizedRoute([]);
+      return;
+    }
+
+    const prevCount = prevPendingCount.current;
+    const wasDeliveryMarked = prevCount > 0 && pendingDeliveries.length < prevCount;
+
+    if (wasDeliveryMarked) {
+      // Show re-optimization banner
+      setReoptimizing(true);
+      Animated.sequence([
+        Animated.timing(bannerOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+        Animated.delay(1800),
+        Animated.timing(bannerOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+      ]).start(() => setReoptimizing(false));
+    }
+
+    prevPendingCount.current = pendingDeliveries.length;
     const route = optimizeRoute(location, pendingDeliveries);
     setOptimizedRoute(route);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location, pendingDeliveries]);
+
+  const estimatedTotalMinutes = useMemo(() => {
+    if (!location || optimizedRoute.length === 0) return 0;
+    return Math.round(totalRouteTravelTime(location, optimizedRoute));
+  }, [location, optimizedRoute]);
 
   const polylineCoordinates = useMemo(() => {
     if (!location || optimizedRoute.length === 0) return [];
-    const coords = [
+    return [
       { latitude: location.latitude, longitude: location.longitude },
       ...optimizedRoute.map((d) => ({
         latitude: d.latitude,
         longitude: d.longitude,
       })),
     ];
-    return coords;
   }, [location, optimizedRoute]);
 
   const mapRegion = useMemo((): Region | undefined => {
@@ -67,6 +97,7 @@ export const RouteScreen: React.FC<Props> = ({ navigation }) => {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Confirm',
+          style: 'default',
           onPress: async () => {
             try {
               await updateDeliveryStatus(deliveryId, 'delivered');
@@ -136,6 +167,15 @@ export const RouteScreen: React.FC<Props> = ({ navigation }) => {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Re-optimisation banner */}
+      {reoptimizing && (
+        <Animated.View style={[styles.reoptBanner, { opacity: bannerOpacity }]}>
+          <Text style={styles.reoptBannerText}>
+            🔄 Re-optimising route for remaining stops…
+          </Text>
+        </Animated.View>
+      )}
+
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backArrow}>
@@ -163,7 +203,6 @@ export const RouteScreen: React.FC<Props> = ({ navigation }) => {
           showsMyLocationButton
           onMapReady={fitMapToMarkers}
         >
-          {/* Driver location marker */}
           {location && (
             <Marker
               coordinate={location}
@@ -173,7 +212,6 @@ export const RouteScreen: React.FC<Props> = ({ navigation }) => {
             />
           )}
 
-          {/* Delivery markers */}
           {optimizedRoute.map((delivery, index) => (
             <Marker
               key={delivery.id}
@@ -190,7 +228,6 @@ export const RouteScreen: React.FC<Props> = ({ navigation }) => {
             </Marker>
           ))}
 
-          {/* Polyline connecting all stops */}
           {polylineCoordinates.length > 1 && (
             <Polyline
               coordinates={polylineCoordinates}
@@ -201,16 +238,25 @@ export const RouteScreen: React.FC<Props> = ({ navigation }) => {
           )}
         </MapView>
 
-        {/* Legend */}
-        <View style={styles.legend}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: COLORS.primary }]} />
-            <Text style={styles.legendText}>You</Text>
+        {/* Legend + ETA chip */}
+        <View style={styles.legendRow}>
+          <View style={styles.legend}>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: COLORS.primary }]} />
+              <Text style={styles.legendText}>You</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: COLORS.warning }]} />
+              <Text style={styles.legendText}>Stops</Text>
+            </View>
           </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: COLORS.warning }]} />
-            <Text style={styles.legendText}>Stops</Text>
-          </View>
+          {estimatedTotalMinutes > 0 && (
+            <View style={styles.etaChip}>
+              <Text style={styles.etaText}>
+                ⏱ ~{estimatedTotalMinutes} min total
+              </Text>
+            </View>
+          )}
         </View>
       </View>
 
@@ -226,7 +272,7 @@ export const RouteScreen: React.FC<Props> = ({ navigation }) => {
           <View style={styles.listHeader}>
             <Text style={styles.listHeaderTitle}>Stops in Optimal Order</Text>
             <Text style={styles.listHeaderSubtitle}>
-              Nearest-neighbor algorithm
+              Distance · Traffic · Travel time
             </Text>
           </View>
           <FlatList
@@ -349,10 +395,27 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontSize: 13,
   },
-  legend: {
+  reoptBanner: {
+    backgroundColor: COLORS.primary,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    alignItems: 'center',
+  },
+  reoptBannerText: {
+    color: COLORS.surface,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  legendRow: {
     position: 'absolute',
     bottom: SPACING.sm,
     left: SPACING.sm,
+    right: SPACING.sm,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  legend: {
     backgroundColor: 'rgba(255,255,255,0.92)',
     borderRadius: BORDER_RADIUS.sm,
     padding: SPACING.sm,
@@ -373,6 +436,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textPrimary,
     fontWeight: '500',
+  },
+  etaChip: {
+    backgroundColor: 'rgba(37,99,235,0.9)',
+    borderRadius: BORDER_RADIUS.sm,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+  },
+  etaText: {
+    color: COLORS.surface,
+    fontSize: 12,
+    fontWeight: '600',
   },
   listHeader: {
     paddingHorizontal: SPACING.md,

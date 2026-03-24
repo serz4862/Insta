@@ -4,8 +4,17 @@ import { EventSubscription } from 'expo-modules-core';
 import { registerForPushNotifications } from '../services/firebase/notificationService';
 import { useAuthStore } from '../store/authStore';
 
+/**
+ * Hook that wires up all push notification lifecycle handling.
+ *
+ * - Registers the device for push notifications on mount (once per uid).
+ * - Handles foreground notifications: expo-notifications shows the OS banner because
+ *   `setNotificationHandler` in notificationService returns `shouldShowBanner: true`.
+ * - Handles background + killed-app taps via `addNotificationResponseReceivedListener`.
+ * - Exposes `onNotificationTap` callback so callers (e.g. RootNavigator) can navigate.
+ */
 export const useNotifications = (
-  onNotificationTap?: (notification: Notifications.Notification) => void
+  onNotificationTap?: (data: Record<string, string>) => void
 ) => {
   const { user } = useAuthStore();
   const notificationListener = useRef<EventSubscription | null>(null);
@@ -14,23 +23,32 @@ export const useNotifications = (
   useEffect(() => {
     if (!user?.id) return;
 
+    // Register device push token with Firebase (non-blocking)
     registerForPushNotifications(user.id).catch((err) =>
-      console.warn('Push notification registration failed:', err)
+      console.warn('[useNotifications] Registration failed:', err)
     );
 
-    // Foreground notification handler
+    // Foreground: notification arrives while the app is open
     notificationListener.current = Notifications.addNotificationReceivedListener(
       (notification) => {
-        console.log('Notification received in foreground:', notification);
+        const { title, body } = notification.request.content;
+        console.log(`[Notification] Foreground — ${title}: ${body}`);
+        // The OS banner is shown automatically by setNotificationHandler.
+        // No extra Alert needed; banner + sound is the correct UX.
       }
     );
 
-    // Notification tap handler (background / killed state)
+    // Background / killed-app: user taps the notification
     responseListener.current = Notifications.addNotificationResponseReceivedListener(
       (response) => {
-        const notification = response.notification;
-        console.log('Notification tapped:', notification);
-        onNotificationTap?.(notification);
+        const rawData = response.notification.request.content.data ?? {};
+        // Coerce to string map for safe consumption by navigation handler
+        const data: Record<string, string> = {};
+        for (const [k, v] of Object.entries(rawData)) {
+          data[k] = String(v ?? '');
+        }
+        console.log('[Notification] Tapped:', data);
+        onNotificationTap?.(data);
       }
     );
 

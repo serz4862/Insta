@@ -50,6 +50,12 @@ export const PhoneVerificationScreen: React.FC<Props> = ({ navigation, route }) 
   const otpRefs = useRef<TextInput[]>([]);
   const { setPhoneVerified, setUser } = useAuthStore();
 
+  // Keep a ref to current otp array to avoid stale closures in auto-submit
+  const otpRef = useRef<string[]>(otp);
+  useEffect(() => {
+    otpRef.current = otp;
+  }, [otp]);
+
   useEffect(() => {
     if (countdown <= 0) return;
     const timer = setTimeout(() => setCountdown((c) => c - 1), 1000);
@@ -71,6 +77,8 @@ export const PhoneVerificationScreen: React.FC<Props> = ({ navigation, route }) 
   const handleSendOtp = async () => {
     if (!validatePhone()) return;
     setIsSendingOtp(true);
+    // Reset OTP boxes when re-sending
+    setOtp(Array(OTP_LENGTH).fill(''));
 
     try {
       /**
@@ -78,13 +86,13 @@ export const PhoneVerificationScreen: React.FC<Props> = ({ navigation, route }) 
        * In production native build: integrate expo-firebase-recaptcha and use
        * PhoneAuthProvider.verifyPhoneNumber() for real SMS delivery.
        */
-      await new Promise((resolve) => setTimeout(resolve, 800)); // simulate network delay
+      await new Promise((resolve) => setTimeout(resolve, 800));
       setOtpSent(true);
       setCountdown(60);
       Alert.alert(
         '📱 OTP Sent (Dev Mode)',
-        'Enter any 6-digit code to verify in development mode.\n\nProduction: Real SMS via Firebase.',
-        [{ text: 'OK' }]
+        'Enter any 6-digit code to verify.\n\nIn production this sends a real SMS via Firebase.',
+        [{ text: 'OK', onPress: () => otpRefs.current[0]?.focus() }]
       );
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Failed to send OTP.';
@@ -94,20 +102,14 @@ export const PhoneVerificationScreen: React.FC<Props> = ({ navigation, route }) 
     }
   };
 
-  const handleVerifyOtp = useCallback(async () => {
-    const otpValue = otp.join('');
+  // Stable verify function that reads from ref — safe for auto-submit timeout
+  const doVerify = useCallback(async (otpValue: string) => {
     if (otpValue.length < OTP_LENGTH) {
       Alert.alert('Incomplete OTP', 'Please enter all 6 digits.');
       return;
     }
-    if (!otpSent) {
-      Alert.alert('Error', 'Please request OTP first.');
-      return;
-    }
-
     setIsVerifying(true);
     try {
-      // Save user document to Firestore — this marks phone as verified
       await createUserDocument(uid, email, phone.trim());
       setUser({ id: uid, email, phone: phone.trim(), role: 'driver' });
       setPhoneVerified(true);
@@ -118,19 +120,33 @@ export const PhoneVerificationScreen: React.FC<Props> = ({ navigation, route }) 
     } finally {
       setIsVerifying(false);
     }
-  }, [otp, otpSent, uid, email, phone, setUser, setPhoneVerified]);
+  }, [uid, email, phone, setUser, setPhoneVerified]);
+
+  const handleVerifyOtp = useCallback(async () => {
+    if (!otpSent) {
+      Alert.alert('Error', 'Please request an OTP first.');
+      return;
+    }
+    await doVerify(otpRef.current.join(''));
+  }, [otpSent, doVerify]);
 
   const handleOtpChange = (value: string, index: number) => {
+    const digit = value.replace(/[^0-9]/g, '').slice(-1);
     const newOtp = [...otp];
-    newOtp[index] = value.replace(/[^0-9]/g, '').slice(-1);
+    newOtp[index] = digit;
     setOtp(newOtp);
-    if (value && index < OTP_LENGTH - 1) {
+
+    if (digit && index < OTP_LENGTH - 1) {
       otpRefs.current[index + 1]?.focus();
     }
-    // Auto-submit when all digits filled
-    if (index === OTP_LENGTH - 1 && value && newOtp.every((d) => d !== '')) {
-      // slight delay to let state settle
-      setTimeout(() => handleVerifyOtp(), 100);
+
+    // Auto-submit when last digit is filled — use ref to avoid stale closure
+    if (index === OTP_LENGTH - 1 && digit) {
+      const filled = [...newOtp];
+      if (filled.every((d) => d !== '')) {
+        const code = filled.join('');
+        setTimeout(() => doVerify(code), 150);
+      }
     }
   };
 

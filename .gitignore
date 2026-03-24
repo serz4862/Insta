@@ -12,7 +12,5 @@ web-build/
 .env
 google-services.json
 GoogleService-Info.plist
-functions/node_modules/
-functions/lib/
 *.log
 .DS_Store

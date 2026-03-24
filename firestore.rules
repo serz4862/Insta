@@ -3,12 +3,22 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Users can only read/write their own document
+    // ── Users ──────────────────────────────────────────────────────────────
+    // A driver can read their own document and create / update it.
+    // The `fcmToken` field is written by the app after login; phone is written
+    // during phone verification. Both are allowed here.
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Allow creating the user doc (phone verification step) or updating it
+      // (e.g. FCM token refresh).
+      allow create, update: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Drivers can only read/update deliveries assigned to them
+    // ── Deliveries ─────────────────────────────────────────────────────────
+    // Drivers can only read deliveries assigned to them.
+    // Drivers can only update the `status` field of their own deliveries.
+    // Creating deliveries is reserved for Cloud Functions / admin SDK.
     match /deliveries/{deliveryId} {
       allow read: if request.auth != null &&
         resource.data.driverId == request.auth.uid;
@@ -17,8 +27,8 @@ service cloud.firestore {
         resource.data.driverId == request.auth.uid &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
 
-      // Only Cloud Functions / admin can create deliveries
       allow create: if false;
+      allow delete: if false;
     }
   }
 }
